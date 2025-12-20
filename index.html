@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Activity Tracker</title>
+    <style>
+      html { margin: 0; height: 100% }
+      body { margin: 0; height: 100% }
+      .text_bin { cursor: pointer }
+      
+      .block { display: inline-block; cursor: pointer; height: 100px; }
+      #details { height: calc(100% - 120px); overflow-y: auto}
+      .block.gap { cursor: default }
+
+      .unknown { background-color: #dbdbdb}
+    </style>
+  </head>
+  <body>
+    <div id="bars"></div>
+    <div id="details"></div>
+    <script type="module" src="activity-tracker-client.js"></script>
+  </body>
+</html>
