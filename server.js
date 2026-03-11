@@ -1,13 +1,77 @@
 import assert from 'node:assert';
 import fs from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
 
 import { activeWindow } from 'get-windows';
 import Database from 'better-sqlite3';
 
+let port = 8201;
+let public_dir = path.resolve('./public');
 let SEC = 1000;
 let MIN = 60 * SEC;
 
+let ext_to_content_type = {
+  '.js': 'text/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpg',
+};
+
 let env = readEnvFromFile();
+
+const server = http.createServer((req, res) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+
+  let req_path = './public' + req.url;
+  if (!path.resolve(req_path).startsWith(public_dir)) {
+    res.writeHead(401, {'Content-Type': 'text/plain'});
+    res.end('401 Illegal path');
+  }
+
+  // default root to /index.html
+  if (req.url == '/')
+    req_path = './public/index.html';
+
+  // determine content type
+  const ext = path.extname(req_path);
+  let content_type = ext_to_content_type[ext] || 'text/html';
+
+  // let path_no_slash = req.url.slice(1);
+  // if (path_no_slash in api) {
+  //   let body = '';
+  //   req.on('data', chunk => {
+  //     body += chunk.toString();
+  //   });
+  //   req.on('end', async () => {
+  //     let args = JSON.parse(body);
+  //     let result = await api[path_no_slash].apply(null, args);
+  //     res.writeHead(200, { 'Content-Type': 'application/json' });
+  //     res.end(JSON.stringify(result));
+  //   });
+  // }
+  // else {
+    fs.readFile(req_path, (err, content) => {
+      if (err) {
+        if (err.code == 'ENOENT') {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('404 Not Found');
+        } else {
+          res.writeHead(500);
+          res.end(`Error: ${err.code}`);
+        }
+      } else {
+        res.writeHead(200, {'Content-Type': content_type});
+        res.end(content, 'utf-8');
+      }
+    });
+  // }
+});
+
+server.listen(port, () => {
+  console.log(`Server running on http://localhost:${port}`);
+});
 
 let config_contents = tryReadFileSync('config.json');
 let project_ids = [];
@@ -35,7 +99,7 @@ if (env.DAYCAST_DATA_DIR && project_ids.length) {
 let last_title, stream, filename;
 setInterval(async function () {
   // manage heartbeat
-  let prev_heartbeat = tryReadFileSync('data/heartbeat.txt');
+  let prev_heartbeat = tryReadFileSync('public/data/heartbeat.txt');
   if (prev_heartbeat) {
     prev_heartbeat = new Date(prev_heartbeat);
     let delta = new Date() - new Date(prev_heartbeat);
@@ -48,7 +112,7 @@ setInterval(async function () {
         fs.appendFileSync(heartbeat_logfile, line, {flush: true});
     }
   }
-  fs.writeFileSync('data/heartbeat.txt', new Date().toISOString(), {flush: true});
+  fs.writeFileSync('public/data/heartbeat.txt', new Date().toISOString(), {flush: true});
 
   // query Daycast DB & update project-min JSON
   if (db) {
@@ -75,7 +139,7 @@ setInterval(async function () {
 
     let proj_json = JSON.stringify(proj_to_min, null, 2);
     if (proj_json != last_proj_json) {
-      fs.writeFileSync(`data/${dt_str}-project-min.json`, proj_json, {flush: true});
+      fs.writeFileSync(`public/data/${dt_str}-project-min.json`, proj_json, {flush: true});
       last_proj_json = proj_json;
     }
   }
@@ -148,7 +212,7 @@ function openDaycastDB() {
 }
 
 function getFilename(dt) {
-  return `data/${toISODate(dt)}-activity.log`;
+  return `public/data/${toISODate(dt)}-activity.log`;
 }
 
 function toISODate(dt) {

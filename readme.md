@@ -11,6 +11,9 @@ Activity tracker is a personal productivity tracker. It consists of:
 
 # To-Do
 
+* Add websocket to client & server (replace API chunk)
+* Add current focus view
+
 * Simplify to 2min granularity, so the UI is usable and investigable
   * Algorithm: iterate log & convert it to a full list of all contiguous CATEGORY blocks (omitting actual window titles)
   * Make a list of tiny category blocks that are <2min

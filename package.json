@@ -1,12 +1,10 @@
 {
   "type": "module",
   "scripts": {
-    "serve": "http-server -c-1",
-    "track": "node activity-tracker.js"
+    "start": "start node server.js && start chrome --app=http://localhost:8201"
   },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
-    "get-windows": "^9.2.3",
-    "http-server": "^14.1.1"
+    "get-windows": "^9.2.3"
   }
 }
