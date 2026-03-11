@@ -11,6 +11,15 @@ Activity tracker is a personal productivity tracker. It consists of:
 
 # To-Do
 
+* Simplify to 2min granularity, so the UI is usable and investigable
+  * Algorithm: iterate log & convert it to a full list of all contiguous CATEGORY blocks (omitting actual window titles)
+  * Make a list of tiny category blocks that are <2min
+  * Sort tiny category block list by duration with smallest first
+  * For each item in the list, look it up in the full list of category blocks
+  * Verify that it is still <2min (it may no longer be, due to changes since the initial scan)
+  * If it is, remove it from the full list and add its time to the block before it
+  * If the block after it is the same category as the block before it, join these into a single, longer, block
+  * Ideally we would simplify the data structure & data to just the coarse-grained data, while retaining the fine-grained data just-in-case (hidden in the UI but visible in the log files)
 * Idle tracking (mouse & keyboard), writes movement to separate input-activity file
 * Read from this on the client, based on a threshold, mark time in the "idle" category
 * Show it in red if it's below `"focus_goal: 0.90"` and green if it's equal or above

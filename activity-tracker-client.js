@@ -23,10 +23,24 @@ document.addEventListener('keyup', function(event) {
   }
 });
 
+let days_of_wk = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 await loadDay(view_day);
 window.addEventListener('resize', renderBins.bind(null, bins));
 
 async function loadDay(view_day) {
+  let div = document.getElementById('details');
+  div.replaceChildren();
+  let p = document.createElement('p');
+
+  let today = new Date();
+  let is_today = view_day.getFullYear() == today.getFullYear() && view_day.getMonth() == today.getMonth() && view_day.getDate() == today.getDate();
+  if (is_today)
+    p.innerText = 'Today';
+  else
+    p.innerText = days_of_wk[view_day.getDay()];
+    
+  div.appendChild(p);
+
   let proj_to_min = await loadJSON(`data/${getISODate(view_day)}-project-min.json`);
 
   let log = await loadText(`data/${getISODate(view_day)}-activity.log`);
@@ -36,8 +50,6 @@ async function loadDay(view_day) {
   setBinLabels(bins);
   renderBins(bins);
 
-  let div = document.getElementById('details');
-  div.replaceChildren();
   for (let cat of categories) {
     if (cat.daycast_project_id) {
       let clocked_min = proj_to_min[cat.daycast_project_id];
@@ -49,16 +61,18 @@ async function loadDay(view_day) {
         if (bin.cat == cat)
           tracked_ms += bin.duration;
       
+      // TODO: show individual clocked times & total; show tracked time & total
       let tracked_min = Math.round(tracked_ms / MIN);
       let pct = Math.round(tracked_min / clocked_min * 100);
       let p = document.createElement('p');
-      p.innerText = `${pct}% ${cat.name}`;
+      p.innerText = `${cat.name} focus: ${pct}% of ${clocked_min/60} clocked hours`;
       div.appendChild(p);
     }
   }
 }
 // renderBinText(bins);
 
+// categorize
 function groupIntoBins(lines) {
   let bins = [];
   let curr_bin, prev_bin;
@@ -67,8 +81,8 @@ function groupIntoBins(lines) {
       continue;
 
     if (line.endsWith('activity tracking stopped')) {
-      assert(curr_bin, 'Unexpected tracking stopped when there was no current bin');
-      curr_bin.end = parseTimestamp(line);
+      if (curr_bin)
+        curr_bin.end = parseTimestamp(line);
       continue;
     }
 
