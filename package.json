@@ -1,10 +1,11 @@
 {
   "type": "module",
   "scripts": {
-    "start": "start node server.js && start chrome --app=http://localhost:8201"
+    "start": "start chrome --app=http://localhost:8201 && node server.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
-    "get-windows": "^9.2.3"
+    "get-windows": "^9.2.3",
+    "ws": "^8.18.0"
   }
 }

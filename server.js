@@ -2,15 +2,22 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import {WebSocketServer} from 'ws';
 
 import { activeWindow } from 'get-windows';
 import Database from 'better-sqlite3';
 
+// TODO:
+// * load time from today on startup into the local array of log lines
+// * adjust it so that it shows % for your current task primarily, w/ total % in parens
+// * fade out UI if the websocket connection is broken
+// * attempt to auto-reconnect
+
 let port = 8201;
 let public_dir = path.resolve('./public');
 let SEC = 1000;
-let MIN = 60 * SEC;
-
+let timestamp_re = /^(\d\d):(\d\d):(\d\d) /;
+let env = readEnvFromFile();
 let ext_to_content_type = {
   '.js': 'text/javascript',
   '.css': 'text/css',
@@ -19,8 +26,7 @@ let ext_to_content_type = {
   '.jpg': 'image/jpg',
 };
 
-let env = readEnvFromFile();
-
+// startup http/websocket server
 const server = http.createServer((req, res) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
 
@@ -38,52 +44,51 @@ const server = http.createServer((req, res) => {
   const ext = path.extname(req_path);
   let content_type = ext_to_content_type[ext] || 'text/html';
 
-  // let path_no_slash = req.url.slice(1);
-  // if (path_no_slash in api) {
-  //   let body = '';
-  //   req.on('data', chunk => {
-  //     body += chunk.toString();
-  //   });
-  //   req.on('end', async () => {
-  //     let args = JSON.parse(body);
-  //     let result = await api[path_no_slash].apply(null, args);
-  //     res.writeHead(200, { 'Content-Type': 'application/json' });
-  //     res.end(JSON.stringify(result));
-  //   });
-  // }
-  // else {
-    fs.readFile(req_path, (err, content) => {
-      if (err) {
-        if (err.code == 'ENOENT') {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('404 Not Found');
-        } else {
-          res.writeHead(500);
-          res.end(`Error: ${err.code}`);
-        }
+  fs.readFile(req_path, (err, content) => {
+    if (err) {
+      if (err.code == 'ENOENT') {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('404 Not Found');
       } else {
-        res.writeHead(200, {'Content-Type': content_type});
-        res.end(content, 'utf-8');
+        res.writeHead(500);
+        res.end(`Error: ${err.code}`);
       }
-    });
-  // }
+    } else {
+      res.writeHead(200, {'Content-Type': content_type});
+      res.end(content, 'utf-8');
+    }
+  });
 });
 
+const wss = new WebSocketServer({server});
+wss.on('connection', function connection(ws) {
+  console.log('client connected, setting is_alive: true');
+  ws.is_alive = true;
+  ws.on('error', console.error);
+  ws.on('message', function(evt) {
+    ws.is_alive = true;
+  });
+});
 server.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
 
-let config_contents = tryReadFileSync('config.json');
+// hydrate config
+let config_contents = tryReadFileSync('public/config.json');
 let project_ids = [];
-if (config_contents) {
-  let config = JSON.parse(config_contents);
-  for (let cat of config.categories)
-    if (cat.daycast_project_id)
-      project_ids.push(cat.daycast_project_id);
+assert(config_contents);
+let config = JSON.parse(config_contents);
+let categories = config.categories;
+for (let cat of categories) {
+  cat.patterns = cat.patterns.map(str => new RegExp(str, 'i'));
+  if (cat.daycast_project_id)
+    project_ids.push(cat.daycast_project_id);
 }
+let unknown_cat = {name: 'unknown'};
+let infer_prev_cat_patterns = config.infer_previous_category.patterns.map(str => new RegExp(str, 'i'));
 
-// Daycast DB prep (TODO: auto-manage cross midnight)
-let db, last_proj_json, sel_time_bounds, sel_tt_events, sel_tasks;
+// connect to Daycast DB and setup prepared statements
+let db, proj_to_ms, sel_time_bounds, sel_tt_events, sel_tasks;
 if (env.DAYCAST_DATA_DIR && project_ids.length) {
   db = openDaycastDB(env.DAYCAST_DATA_DIR);
   // adapted from daycast's time-report.js
@@ -95,29 +100,36 @@ if (env.DAYCAST_DATA_DIR && project_ids.length) {
   sel_tasks = db.prepare(`SELECT value FROM task WHERE deleted=0 AND date=?`);
 }
 
+let last_title, stream, todays_log, filename;
+ensureTodaysLogFile();
+todays_log = fs.readFileSync(getFilename(), {encoding: 'utf8'}).split('\n');
 
-let last_title, stream, filename;
+// update every 5 seconds
+let update_interval = 5 * SEC;
 setInterval(async function () {
-  // manage heartbeat
+
+  // regularly save "heartbeat" to a file, so we know when the computer is asleep
   let prev_heartbeat = tryReadFileSync('public/data/heartbeat.txt');
   if (prev_heartbeat) {
     prev_heartbeat = new Date(prev_heartbeat);
     let delta = new Date() - new Date(prev_heartbeat);
+    // if there's more than a 60s gap between heartbeats, flag the last one as an end of activity tracking
     if (delta > 60 * 1000) {
       let heartbeat_logfile = getFilename(prev_heartbeat);
       let line = `${timestamp(prev_heartbeat)} activity tracking stopped\n`;
-      if (heartbeat_logfile == filename)
+      if (heartbeat_logfile == filename) {
         stream.write(line);
-      else
+        todays_log.push(line.trim());
+      } else {
         fs.appendFileSync(heartbeat_logfile, line, {flush: true});
+      }
     }
   }
   fs.writeFileSync('public/data/heartbeat.txt', new Date().toISOString(), {flush: true});
 
-  // query Daycast DB & update project-min JSON
+  // query Daycast DB for clocked time
   if (db) {
     let dt = new Date();
-    // dt.setDate(dt.getDate() - 1);
     let dt_str = toISODate(dt);
 
     let bounds = sel_time_bounds.get(dt_str);
@@ -128,19 +140,13 @@ setInterval(async function () {
     tasks = tasks.filter(task => project_ids.includes(task.project_id));
     let task_ids = tasks.map(task => task.id);  
 
-    let proj_to_min = {};
+    proj_to_ms = {};
     let task_to_ms = getTaskMS(task_ids, tt_events);
     for (let project_id of project_ids) {
-      proj_to_min[project_id] = 0;
+      proj_to_ms[project_id] = 0;
       for (let task of tasks)
         if (task.project_id == project_id)
-          proj_to_min[project_id] += Math.round(task_to_ms[task.id] / MIN);
-    }
-
-    let proj_json = JSON.stringify(proj_to_min, null, 2);
-    if (proj_json != last_proj_json) {
-      fs.writeFileSync(`public/data/${dt_str}-project-min.json`, proj_json, {flush: true});
-      last_proj_json = proj_json;
+          proj_to_ms[project_id] += task_to_ms[task.id];
     }
   }
 
@@ -151,19 +157,59 @@ setInterval(async function () {
     writeLogLine(`activated: ${curr_title}`);
     last_title = curr_title;
   }
-}, 1000);
+
+  // get the focus % for today
+  let bins = groupIntoBins(todays_log);
+  let pct, clocked_ms;
+  for (let cat of categories) {
+    if (cat.daycast_project_id) {
+      clocked_ms = proj_to_ms[cat.daycast_project_id];
+
+      let tracked_ms = 0;
+      for (let bin of bins)
+        if (bin.cat == cat)
+          tracked_ms += bin.duration;
+      
+      // TODO: show individual clocked times & total; show tracked time & total
+      if (clocked_ms) {
+        pct = Math.round(tracked_ms / clocked_ms * 100);
+        // console.log(`${cat.name} focus: ${pct}% of ${clocked_ms/MIN} clocked minutes`);
+      }
+    }
+  }
+
+  // send the current pct time & clocked_ms to websocket clients
+  for (let ws of wss.clients) {
+    if (ws.is_alive) {
+      // console.log('sending ping & setting is_alive: false');
+      ws.is_alive = false;
+      let msg = {evt: 'ping'};
+      if (pct || clocked_ms) {
+        msg.pct = pct || 0;
+        msg.clocked_ms = clocked_ms || 0;
+      }
+      ws.send(JSON.stringify(msg));
+    }
+    else {
+      console.log('is_alive is false, terminating');
+      ws.terminate();
+    }
+  }
+}, update_interval);
 
 function writeLogLine(msg) {
+  ensureTodaysLogFile();
   let dt = new Date();
-  ensureTodaysLogFile(dt);
   stream.write(`${timestamp(dt)} ${msg}\n`);
+  todays_log.push(`${timestamp(dt)} ${msg}`);
 }
 
-function ensureTodaysLogFile(dt) {
-  let new_filename = getFilename(dt);
+function ensureTodaysLogFile() {
+  let new_filename = getFilename();
   if (new_filename != filename) {
     if (stream)
       stream.end();
+    todays_log = [];
 
     filename = new_filename;
     stream = fs.createWriteStream(filename, {flags:'a+', flush: true});
@@ -212,6 +258,8 @@ function openDaycastDB() {
 }
 
 function getFilename(dt) {
+  if (!dt)
+    dt = new Date();
   return `public/data/${toISODate(dt)}-activity.log`;
 }
 
@@ -231,8 +279,6 @@ function pad2(n) {
   else
     return n;
 }
-
-
 
 // adapted from Daycast codebase
 
@@ -292,9 +338,9 @@ function getTaskMS(task_ids, tt_events, cutoff_time) {
   // do the minute floor()ing *after* aggregating for each task
   // we cannot do this at a larger granularity than the task
   // but we should not do it at a smaller granularity (on every clockout) or users unnecessarily lose time
-  for (var task_id in task_ms) {
-    task_ms[task_id] = floorMin(task_ms[task_id]);
-  }
+  // for (var task_id in task_ms) {
+  //   task_ms[task_id] = floorMin(task_ms[task_id]);
+  // }
 
   return task_ms;
 }
@@ -304,4 +350,91 @@ function getTaskMS(task_ids, tt_events, cutoff_time) {
 // since the user edits & "owns" the data in the UI at the minute granularity
 function floorMin(ms) {
   return Math.floor(ms / 60000) * 60000;
+}
+
+// categorize
+function groupIntoBins(lines) {
+  let bins = [];
+  let curr_bin, prev_bin;
+  for (let line of lines) {
+    if (!line)
+      continue;
+
+    if (line.endsWith('activity tracking stopped')) {
+      if (curr_bin)
+        curr_bin.end = parseTimestamp(line);
+      continue;
+    }
+
+    let cat = getCategory(line);
+    if (cat == unknown_cat && matchesPattern(line, infer_prev_cat_patterns)) {
+      if (curr_bin?.cat == unknown_cat)
+        cat = prev_bin?.cat || unknown_cat;
+      else
+        cat = curr_bin?.cat || unknown_cat;
+    }
+
+    if (cat == curr_bin?.cat && !curr_bin?.end) {
+      curr_bin.lines.push(line);
+    }
+    else {
+      prev_bin = curr_bin;
+      curr_bin = {cat: cat, lines: [line], start: parseTimestamp(line)};
+      
+      // implicitly end the previous bin if it didn't explicitly end
+      if (prev_bin && !prev_bin.end)
+        prev_bin.end = curr_bin.start;
+
+      bins.push(curr_bin);
+    }
+  }
+
+  // implicitly end the final bin now
+  let last_bin = bins[bins.length-1];
+  if (last_bin && !last_bin.end)
+    last_bin.end = new Date();
+
+  for (let bin of bins) {
+    bin.duration = bin.end - bin.start;
+  }
+  return bins;
+}
+
+function parseTimestamp(line) {
+  let match = timestamp_re.exec(line);
+  assert(match, `line didn't begin with timestamp: ${line}`);
+  // let dt = new Date(view_day.toISOString());
+  let dt = new Date(); // TODO: this assumes the timestamp is for today... is this safe in a server context?
+  dt.setHours(parseInt(match[1]));
+  dt.setMinutes(parseInt(match[2]));
+  dt.setSeconds(parseInt(match[3]));
+  dt.setMilliseconds(0);
+  return dt;
+}
+
+function getCategory(line) {
+  let curr_cat;
+  for (let cat of categories) {
+    if (matchesPattern(line, cat.patterns)) {
+      if (curr_cat) {
+        if (curr_cat.is_secondary)
+          curr_cat = cat;
+        else
+          assert(cat.is_secondary, `line matches multiple primary categories: ${curr_cat?.name} and ${cat.name} (${line})`);
+      }
+      else {
+        curr_cat = cat;
+      }
+    }
+  }
+  return curr_cat || unknown_cat;
+}
+
+function matchesPattern(line, patterns) {
+  for (let pattern of patterns) {
+    if (pattern.test(line)) {
+      return true;
+    }
+  }
+  return false;
 }
