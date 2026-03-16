@@ -8,10 +8,13 @@ import { activeWindow } from 'get-windows';
 import Database from 'better-sqlite3';
 
 // TODO:
-// * load time from today on startup into the local array of log lines
-// * adjust it so that it shows % for your current task primarily, w/ total % in parens
+// * make it show % of your current task primarily
+// * display total % for the day below, in parentheses
 // * fade out UI if the websocket connection is broken
 // * attempt to auto-reconnect
+
+// ? save/load activity log to .gz file to conserve space
+//   * (1mo of activity logs takes ~2mb)
 
 let port = 8201;
 let public_dir = path.resolve('./public');
@@ -348,9 +351,9 @@ function getTaskMS(task_ids, tt_events, cutoff_time) {
 // always round down to the nearest minute
 // this keeps the behavior as the user expects
 // since the user edits & "owns" the data in the UI at the minute granularity
-function floorMin(ms) {
-  return Math.floor(ms / 60000) * 60000;
-}
+// function floorMin(ms) {
+//   return Math.floor(ms / 60000) * 60000;
+// }
 
 // categorize
 function groupIntoBins(lines) {
